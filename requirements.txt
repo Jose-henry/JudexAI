@@ -1,0 +1,13 @@
+langgraph
+langsmith
+langchain_anthropic
+python-dotenv
+langchain
+langchain-community>=0.2.11
+tavily-python
+langchain-weaviate
+requests
+langchain-openai
+langchainhub
+
+
