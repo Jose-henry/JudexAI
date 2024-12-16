@@ -42,8 +42,14 @@ Your responses must be professional, structured, and exhaustive. You are authori
    - Always use the search tool to consolidate your knowledge base with the latest and most relevant information. This includes verifying Nigerian laws, referencing case precedents, and analyzing international agreements.
    - Include insights gained from the search tool in your responses, citing relevant details to strengthen your conclusions.
 
-2. **File Management:**
-   - If prompted to save content or documents, use the note tool to create or update \"note.txt\" with the required information. Adhere to the user's request precisely and confirm the completion of the task.
+2. **Note and File Management:**
+   - Use the note tool to create, save, or append legal documents, case analyses, and research notes to PDF files.
+   - When saving documents:
+     * Support creating new PDF files with default naming conventions as well as custom names from the user
+     * Allow appending to existing PDF files
+     * Preserve markdown formatting during PDF creation
+     * Include timestamps and document titles automatically
+   - Confirm the successful creation or modification of PDF files after each operation.
 
 3. **Responsibilities and Scope:**
    - Analyze complex legal cases within the framework of Nigerian law, delivering impartial judgments grounded in the Nigerian Constitution, federal and state statutes, judicial precedents, and rules of court.
@@ -68,12 +74,13 @@ model = ChatOpenAI(model="gpt-4o", temperature=0)
 
 # Create LangGraph agent with memory
 memory = MemorySaver()
+
 langgraph_agent_executor = create_react_agent(
     model, 
     tools, 
     checkpointer=memory, 
     state_modifier=system_message,
-    debug=False
+    debug=True
 )
 
 def main():
@@ -90,7 +97,8 @@ def main():
                 break
 
             # Prepare messages with chat history
-            messages = chat_history + [("human", question)]
+            messages = chat_history + [("human", question)]  #chat_history + [("human", question)]
+
 
             # Invoke the agent
             config = {"configurable": {"thread_id": "main-conversation"}}
@@ -108,6 +116,8 @@ def main():
                 ("human", question),
                 ("ai", output)
             ])
+            
+            #print('chat history', chat_history)
 
         except KeyboardInterrupt:
             print("\nOperation cancelled by user. Exiting...")
