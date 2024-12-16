@@ -10,5 +10,7 @@ requests
 langchain-openai
 langchainhub
 aiohttp
+PyPDF2
+reportlab
 
 
