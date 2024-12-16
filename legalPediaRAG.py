@@ -31,7 +31,7 @@ LEGALPEDIA_API_KEY=os.getenv("LEGALPEDIA_API_KEY")
 LEGALPEDIA_BASE_URL = os.getenv("LEGALPEDIA_BASE_URL", "https://legalpediaresources.com/api/v1")
 LEGALPEDIA_BEARER_TOKEN = os.getenv("LEGALPEDIA_BEARER_TOKEN")
 
-# Connect to the Weaviate client
+
 # Connect to the Weaviate client
 try:
     weaviate_client = weaviate.connect_to_local( 
