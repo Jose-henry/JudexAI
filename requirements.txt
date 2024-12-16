@@ -9,5 +9,6 @@ langchain-weaviate
 requests
 langchain-openai
 langchainhub
+aiohttp
 
 
