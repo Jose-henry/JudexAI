@@ -17,7 +17,7 @@ class QueryResponse(BaseModel):
     response: str
     download_link: str = None
 
-# Directory to store PDF files
+# Directory to store PDF filess
 NOTES_DIR = "notes"
 os.makedirs(NOTES_DIR, exist_ok=True)
 
