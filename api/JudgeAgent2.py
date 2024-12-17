@@ -16,7 +16,7 @@ from api.rag import rag_tool
 from langchain_community.tools import TavilySearchResults
 from langchain_core.messages import HumanMessage, AIMessage
 
-# Load environment variables from a .env file
+# Load environment variables from a .env files
 load_dotenv()
 
 # Tavily API key
