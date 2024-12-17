@@ -12,5 +12,10 @@ langchainhub
 aiohttp
 PyPDF2
 reportlab
+fastapi
+pydantic
+uvicorn
+python-multipart
+
 
 

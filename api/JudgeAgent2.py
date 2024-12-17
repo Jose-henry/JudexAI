@@ -10,9 +10,9 @@ from langchain.agents import create_tool_calling_agent, create_openai_functions_
 from langchain.agents import AgentExecutor
 from langchain.tools.retriever import create_retriever_tool
 from langchain import hub
-from note import note_tool
+from api.note import note_tool
 from langchain_core.prompts import PromptTemplate, ChatPromptTemplate, MessagesPlaceholder
-from rag import rag_tool
+from api.rag import rag_tool
 from langchain_community.tools import TavilySearchResults
 from langchain_core.messages import HumanMessage, AIMessage
 
