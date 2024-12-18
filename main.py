@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List
-from api.JudgeAgent2 import langgraph_agent_executor  # Adjusted import path
+from JudgeAgent2 import langgraph_agent_executor  # Adjusted import path
 import os
 from fastapi.responses import FileResponse
 
