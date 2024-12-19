@@ -87,7 +87,7 @@ langgraph_agent_executor = create_react_agent(
     tools, 
     checkpointer=memory, 
     state_modifier=system_message,
-    debug=False
+    debug=True
 )
 
 def main():
