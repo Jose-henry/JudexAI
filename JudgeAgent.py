@@ -18,9 +18,8 @@ from langchain_core.messages import HumanMessage, AIMessage
 load_dotenv()
 
 # tavily api key
-#TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
-# Tavily API key (hardcoded)
-TAVILY_API_KEY = "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"
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+
 
 
 # prompt1 = hub.pull("hwchase17/openai-functions-agent")
