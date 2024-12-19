@@ -7,9 +7,9 @@ from langchain.agents import create_tool_calling_agent, create_openai_functions_
 from langchain.agents import AgentExecutor
 from langchain.tools.retriever import create_retriever_tool
 from langchain import hub
-from note import note_tool
+from api.note import note_tool
 from langchain_core.prompts import PromptTemplate, ChatPromptTemplate, MessagesPlaceholder
-from rag import rag_tool
+from api.rag import rag_tool
 from langchain_community.tools import TavilySearchResults
 from langchain_core.messages import HumanMessage, AIMessage
 
@@ -18,7 +18,10 @@ from langchain_core.messages import HumanMessage, AIMessage
 load_dotenv()
 
 # tavily api key
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+#TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+# Tavily API key (hardcoded)
+TAVILY_API_KEY = "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"
+
 
 # prompt1 = hub.pull("hwchase17/openai-functions-agent")
 

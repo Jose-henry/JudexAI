@@ -20,7 +20,9 @@ from langchain_core.messages import HumanMessage, AIMessage
 load_dotenv()
 
 # Tavily API key
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+#TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+TAVILY_API_KEY = "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"
+
 
 # Create search tool
 search_tool = TavilySearchResults(
