@@ -39,3 +39,5 @@ def generate_fibonacci(n):
         b = a + b
         # a, b = b, a + b
     return result
+
+print(generate_fibonacci(50))
