@@ -15,8 +15,6 @@ reportlab
 fastapi
 pydantic
 uvicorn
+gunicorn
 python-multipart
 weaviate-client
-
-
-
