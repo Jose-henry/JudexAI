@@ -62,3 +62,10 @@ async def download_file(file_name: str):
     if os.path.exists(file_path):
         return FileResponse(file_path, media_type="application/pdf", filename=file_name)
     return {"error": "File not found."}
+
+@app.get("/")
+async def get_home():
+    """
+    Endpoint to display some text on the browser.
+    """
+    return {"message": "Welcome to the Lextech AI Judge API."}
