@@ -15,18 +15,19 @@ class QueryRequest(BaseModel):
 # Define the response model
 class QueryResponse(BaseModel):
     response: str
-    download_link: str = None
 
-# Directory to store PDF filess
+# Directory to store PDF files
 NOTES_DIR = "notes"
 os.makedirs(NOTES_DIR, exist_ok=True)
+
+# Chat history to maintain conversation context
+chat_history = []
 
 @app.post("/judge", response_model=QueryResponse)
 async def query_judge_agent(request: QueryRequest):
     """
     Endpoint to interact with the Lextech AI Judge Assistant.
     Accepts a list of messages and returns the AI's response.
-    Optionally generates a PDF and provides a download link.
     """
     try:
         # Reformat messages for the agent
@@ -41,27 +42,24 @@ async def query_judge_agent(request: QueryRequest):
                     if hasattr(msg, 'content'):
                         full_response += msg.content
 
-        # Generate a PDF file
-        pdf_filename = os.path.join(NOTES_DIR, "response_note.pdf")
-        with open(pdf_filename, "w") as f:
-            f.write(full_response)
+        # Update chat history
+        for msg in chat_messages:
+            chat_history.append(("human", msg[1]))
+        chat_history.append(("ai", full_response))
 
-        # Generate a download link
-        download_link = f"/download/response_note.pdf"
-
-        return {"response": full_response, "download_link": download_link}
+        return {"response": full_response}
     except Exception as e:
-        return {"response": f"Error occurred: {str(e)}", "download_link": None}
+        return {"response": f"Error occurred: {str(e)}"}
 
-@app.get("/download/{file_name}")
-async def download_file(file_name: str):
+@app.get("/current-conversation")
+async def get_current_conversation():
     """
-    Endpoint to serve PDF files for download.
+    Endpoint to retrieve the current conversation context (user and AI responses).
     """
-    file_path = os.path.join(NOTES_DIR, file_name)
-    if os.path.exists(file_path):
-        return FileResponse(file_path, media_type="application/pdf", filename=file_name)
-    return {"error": "File not found."}
+    formatted_history = [
+        {"role": role, "content": content} for role, content in chat_history
+    ]
+    return {"conversation": formatted_history}
 
 @app.get("/")
 async def get_home():
