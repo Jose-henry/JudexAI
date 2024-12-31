@@ -53,15 +53,15 @@ async def query_judge_agent(request: QueryRequest):
     except Exception as e:
         return {"response": f"Error occurred: {str(e)}"}
 
-@app.get("/current-conversation")
-async def get_current_conversation():
-    """
-    Endpoint to retrieve the current conversation context (user and AI responses).
-    """
-    formatted_history = [
-        {"role": role, "content": content} for role, content in chat_history
-    ]
-    return {"conversation": formatted_history}
+# @app.get("/current-conversation")
+# async def get_current_conversation():
+#     """
+#     Endpoint to retrieve the current conversation context (user and AI responses).
+#     """
+#     formatted_history = [
+#         {"role": role, "content": content} for role, content in chat_history
+#     ]
+#     return {"conversation": formatted_history}
 
 @app.get("/")
 async def get_home():
