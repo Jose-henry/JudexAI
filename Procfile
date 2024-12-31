@@ -1,1 +1,1 @@
-web: gunicorn -w 2 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8082 --worker-tmp-dir /dev/shm /api/main:app
+web: gunicorn -w 2 -k uvicorn.workers.UvicornWorker --worker-tmp-dir /dev/shm /api/main:app
