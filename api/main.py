@@ -45,8 +45,8 @@ async def query_judge_agent(request: QueryRequest):
         # Extract the user's question from the request messages
         question = request.messages[-1]["content"]  # Assuming the last message is the user's question
         chat_history.extend([
-            ("USER", question),
-            ("ASSITANT", full_response)
+            ("user", question),
+            ("ai", full_response)
         ])
 
         return {"response": full_response}
