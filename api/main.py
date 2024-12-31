@@ -68,4 +68,4 @@ async def get_home():
     """
     Endpoint to display some text on the browser.
     """
-    return {"message": "Welcome to the Lextech AI Judge API."}
+    return {"Welcome to the Lextech AI Judge API."}
