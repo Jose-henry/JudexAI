@@ -31,7 +31,7 @@ async def query_judge_agent(request: QueryRequest):
     """
     try:
         # Reformat messages for the agent
-        chat_messages = [(msg["role"], msg["content"]) for msg in request.messages]
+        chat_messages = chat_history + [(msg["role"], msg["content"]) for msg in request.messages]
         config = {"configurable": {"thread_id": "main-conversation"}}
 
         # Collect agent response
@@ -42,10 +42,12 @@ async def query_judge_agent(request: QueryRequest):
                     if hasattr(msg, 'content'):
                         full_response += msg.content
 
-        # Update chat history
-        for msg in chat_messages:
-            chat_history.append(("human", msg[1]))
-        chat_history.append(("ai", full_response))
+        # Extract the user's question from the request messages
+        question = request.messages[-1]["content"]  # Assuming the last message is the user's question
+        chat_history.extend([
+            ("USER", question),
+            ("ASSITANT", full_response)
+        ])
 
         return {"response": full_response}
     except Exception as e:
