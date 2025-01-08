@@ -31,7 +31,7 @@ async def query_judge_agent(request: QueryRequest):
     """
     try:
         # Reformat messages for the agent
-        chat_messages = chat_history + [(msg["role"], msg["content"]) for msg in request.messages]
+        chat_messages = [(msg["role"], msg["content"]) for msg in request.messages]
         config = {"configurable": {"thread_id": "main-conversation"}}
 
         # Collect agent response
