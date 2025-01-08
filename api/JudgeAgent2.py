@@ -77,7 +77,7 @@ Your goal is to provide accurate, well-researched, and professional legal insigh
 tools = [note_tool, rag_tool, search_tool]
 
 # Initialize LLM
-model = ChatOpenAI(model="gpt-4o", temperature=0)
+model = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
 # Create LangGraph agent with memory
 memory = MemorySaver()
