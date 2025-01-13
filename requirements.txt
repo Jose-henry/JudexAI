@@ -18,3 +18,11 @@ uvicorn
 gunicorn
 python-multipart
 weaviate-client
+pypdf
+langchain-unstructured
+unstructured-client
+unstructured
+unstructured[pdf]
+python-magic
+PyMuPDF
+pillow 
