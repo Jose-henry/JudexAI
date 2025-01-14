@@ -1,135 +1,145 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from typing import List
-from pydantic import BaseModel
+from typing import List, Optional
+from pydantic import BaseModel, HttpUrl
 import base64
 import io
 import os
 from PIL import Image
 import fitz  # PyMuPDF for PDF processing
-from api.JudgeAgent2 import langgraph_agent_executor  # Import the LangChain agent
+import requests
+from api.JudgeAgent2 import langgraph_agent_executor
 
 # Initialize FastAPI app
 app = FastAPI()
 
-# Define the request body schema
-class QueryRequest(BaseModel):
-    messages: List[dict]  # [{"role": "human/ai", "content": "query text"}]
+# Enhanced request body schema to handle URLs
+class MessageContent(BaseModel):
+    role: str
+    content: str
+    file_url: Optional[HttpUrl] = None
 
-# Define the response model
+class QueryRequest(BaseModel):
+    messages: List[MessageContent]
+
 class QueryResponse(BaseModel):
     response: str
 
-# Directory to store PDF files
-NOTES_DIR = "notes"
-os.makedirs(NOTES_DIR, exist_ok=True)
-
-# Helper functions for processing files
-def pdf_to_images(pdf_bytes: bytes) -> List[str]:
+async def download_file(url: str) -> bytes:
     """
-    Convert a PDF to a list of base64-encoded image strings.
-
+    Download file from URL.
+    
     Args:
-        pdf_bytes (bytes): Byte content of the PDF file.
-
+        url (str): URL of the file to download
+        
     Returns:
-        List[str]: A list of base64-encoded image strings, one for each page.
+        bytes: Content of the downloaded file
     """
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        return response.content
+    except requests.RequestException as e:
+        raise HTTPException(status_code=400, detail=f"Failed to download file: {str(e)}")
+
+async def process_pdf_url(url: str) -> List[str]:
+    """
+    Process a PDF from URL and convert to base64 images.
+    
+    Args:
+        url (str): URL of the PDF file
+        
+    Returns:
+        List[str]: List of base64-encoded images, one per page
+    """
+    pdf_bytes = await download_file(url)
     images_base64 = []
-    pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf")
+    
+    try:
+        pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf")
+        
+        for page_number in range(len(pdf_document)):
+            page = pdf_document.load_page(page_number)
+            pix = page.get_pixmap()
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            
+            buffer = io.BytesIO()
+            img.save(buffer, format="PNG")
+            images_base64.append(base64.b64encode(buffer.getvalue()).decode("utf-8"))
+            
+        return images_base64
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to process PDF: {str(e)}")
 
-    for page_number in range(len(pdf_document)):
-        page = pdf_document.load_page(page_number)
-        pix = page.get_pixmap()
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-
+async def process_image_url(url: str) -> str:
+    """
+    Process an image from URL and convert to base64.
+    
+    Args:
+        url (str): URL of the image file
+        
+    Returns:
+        str: Base64-encoded image string
+    """
+    image_bytes = await download_file(url)
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
         buffer = io.BytesIO()
         img.save(buffer, format="PNG")
-        images_base64.append(base64.b64encode(buffer.getvalue()).decode("utf-8"))
-
-    return images_base64
-
-def image_to_base64(image_bytes: bytes) -> str:
-    """
-    Convert an image to a base64-encoded string.
-
-    Args:
-        image_bytes (bytes): Byte content of the image file.
-
-    Returns:
-        str: A base64-encoded image string.
-    """
-    img = Image.open(io.BytesIO(image_bytes))
-    buffer = io.BytesIO()
-    img.save(buffer, format="PNG")
-    return base64.b64encode(buffer.getvalue()).decode("utf-8")
+        return base64.b64encode(buffer.getvalue()).decode("utf-8")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to process image: {str(e)}")
 
 # Chat history to maintain conversation context
 chat_history = []
 
 @app.post("/judge", response_model=QueryResponse)
-async def query_judge_agent(
-    request: Request,
-    file: UploadFile = None
-):
+async def query_judge_agent(request: QueryRequest):
     """
-    Endpoint to interact with the Lextech AI Judge Assistant, allowing for text and file uploads.
-
+    Endpoint to interact with the Lextech AI Judge Assistant using file URLs.
+    
     Args:
-        request (Request): Raw request object to handle multipart or JSON input.
-        file (UploadFile, optional): An optional file upload (PDF or image).
-
+        request (QueryRequest): Request containing messages and optional file URLs
+        
     Returns:
-        QueryResponse: AI's response to the uploaded content and text input.
+        QueryResponse: AI's response to the content
     """
     try:
-        content_type = request.headers.get('content-type', '')
-        
-        if 'multipart/form-data' in content_type:
-            form = await request.form()
-            request_str = form.get('request')
-            if not request_str:
-                raise HTTPException(status_code=400, detail="Form field 'request' is required")
-            request_data = QueryRequest.model_validate_json(request_str)
-            file = form.get('file')
-        else:
-            body = await request.json()
-            request_data = QueryRequest.model_validate(body)
-
         # Format messages for multimodal input
         formatted_messages = []
-        for msg in request_data.messages:
-            formatted_msg = {
+        
+        for msg in request.messages:
+            # Add text content
+            formatted_messages.append({
                 "type": "text",
-                "text": msg["content"]
-            }
-            formatted_messages.append(formatted_msg)
-
-        # Process file if present
-        if file:
-            file_extension = file.filename.split(".")[-1].lower()
-            if file_extension == "pdf":
-                pdf_bytes = await file.read()
-                images_base64 = pdf_to_images(pdf_bytes)
-                # Add each page as a separate image message
-                for image_base64 in images_base64:
+                "text": msg.content
+            })
+            
+            # Process file URL if present
+            if msg.file_url:
+                file_ext = msg.file_url.path.split('.')[-1].lower()
+                
+                if file_ext == 'pdf':
+                    # Process PDF and add each page as an image
+                    images_base64 = await process_pdf_url(str(msg.file_url))
+                    for image_base64 in images_base64:
+                        formatted_messages.append({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{image_base64}"
+                            }
+                        })
+                elif file_ext in ['png', 'jpg', 'jpeg']:
+                    # Process single image
+                    image_base64 = await process_image_url(str(msg.file_url))
                     formatted_messages.append({
                         "type": "image_url",
                         "image_url": {
                             "url": f"data:image/png;base64,{image_base64}"
                         }
                     })
-            elif file_extension in ["png", "jpg", "jpeg"]:
-                image_bytes = await file.read()
-                image_base64 = image_to_base64(image_bytes)
-                formatted_messages.append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/png;base64,{image_base64}"
-                    }
-                })
-            else:
-                raise HTTPException(status_code=400, detail="Unsupported file format")
+                else:
+                    raise HTTPException(status_code=400, detail="Unsupported file format")
 
         # Format final message structure for LangChain
         chat_messages = [("human", formatted_messages)]
@@ -143,14 +153,13 @@ async def query_judge_agent(
                     if hasattr(msg, 'content'):
                         full_response += msg.content
 
-        # Update chat history
-        question = request_data.messages[-1]["content"] if request_data.messages else ""
-        if file:
-            question += f" (with uploaded document: {file.filename})"
-        chat_history.extend([
-            ("user", question),
-            ("ai", full_response)
-        ])
+        # Update chat history with the last message and response
+        last_msg = request.messages[-1] if request.messages else None
+        if last_msg:
+            chat_history.extend([
+                ("user", f"{last_msg.content} (with file: {last_msg.file_url})" if last_msg.file_url else last_msg.content),
+                ("ai", full_response)
+            ])
 
         return QueryResponse(response=full_response)
 
