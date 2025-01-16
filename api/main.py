@@ -17,7 +17,7 @@ app = FastAPI()
 class MessageContent(BaseModel):
     role: str
     content: str
-    file_url: Optional[HttpUrl] = None
+    file_url: Optional[List[HttpUrl]] = None
 
 class QueryRequest(BaseModel):
     messages: List[MessageContent]
@@ -115,31 +115,32 @@ async def query_judge_agent(request: QueryRequest):
                 "text": msg.content
             })
             
-            # Process file URL if present
+            # Process file URLs if present
             if msg.file_url:
-                file_ext = msg.file_url.path.split('.')[-1].lower()
-                
-                if file_ext == 'pdf':
-                    # Process PDF and add each page as an image
-                    images_base64 = await process_pdf_url(str(msg.file_url))
-                    for image_base64 in images_base64:
+                for url in msg.file_url:
+                    file_ext = str(url).split('.')[-1].lower()
+                    
+                    if file_ext == 'pdf':
+                        # Process PDF and add each page as an image
+                        images_base64 = await process_pdf_url(str(url))
+                        for image_base64 in images_base64:
+                            formatted_messages.append({
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{image_base64}"
+                                }
+                            })
+                    elif file_ext in ['png', 'jpg', 'jpeg']:
+                        # Process single image
+                        image_base64 = await process_image_url(str(url))
                         formatted_messages.append({
                             "type": "image_url",
                             "image_url": {
                                 "url": f"data:image/png;base64,{image_base64}"
                             }
                         })
-                elif file_ext in ['png', 'jpg', 'jpeg']:
-                    # Process single image
-                    image_base64 = await process_image_url(str(msg.file_url))
-                    formatted_messages.append({
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/png;base64,{image_base64}"
-                        }
-                    })
-                else:
-                    raise HTTPException(status_code=400, detail="Unsupported file format")
+                    else:
+                        raise HTTPException(status_code=400, detail="Unsupported file format")
 
         # Format final message structure for LangChain
         chat_messages = [("human", formatted_messages)]
@@ -156,8 +157,9 @@ async def query_judge_agent(request: QueryRequest):
         # Update chat history with the last message and response
         last_msg = request.messages[-1] if request.messages else None
         if last_msg:
+            file_urls = list(last_msg.file_url) if last_msg.file_url else []
             chat_history.extend([
-                ("user", f"{last_msg.content} (with file: {last_msg.file_url})" if last_msg.file_url else last_msg.content),
+                ("user", f"{last_msg.content} (with files: {', '.join(map(str, file_urls))})" if file_urls else last_msg.content),
                 ("ai", full_response)
             ])
 
