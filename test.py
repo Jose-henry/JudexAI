@@ -94,3 +94,49 @@ def fib(idx):
 
 
 print(fib(0))
+
+
+
+def ls (arr,x):
+    i=0
+    if len(arr) == 0:
+        return -1
+    if arr[0] == x:
+        return True, arr[0], i
+    else:
+        i+=1
+    return ls(arr[1:], x)
+
+
+def bs (arr,x):
+    l, r = 0, len(arr)-1
+    while l <= r:
+        h = (l+r)//2
+        if x == arr[h]:
+            return True, h
+        elif x > arr[h]:
+            l = h + 1
+        else:
+            r = h - 1
+    return -1
+
+
+def rbs(arr, x):
+    l=len(arr)
+    if l == 0:
+        return -1
+    h =l//2
+    if arr[h]==x:
+        return  x, True
+    elif arr[h] > x:
+        return rbs(arr[:h], x)
+    else:
+        return rbs(arr[(h+1):], x)
+
+
+
+
+arr=[1,2,3,4,5]
+# print(arr[2:])
+x=6
+print(rbs(arr, x))
