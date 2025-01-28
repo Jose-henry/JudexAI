@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from typing import List, Optional
+from typing import List, Optional, Dict
 from pydantic import BaseModel, HttpUrl
 import base64
 import io
@@ -8,6 +8,8 @@ import os
 from PIL import Image
 import fitz  # PyMuPDF for PDF processing
 import requests
+import hashlib
+import json
 from api.JudgeAgent2 import langgraph_agent_executor
 
 # Initialize FastAPI app
@@ -24,6 +26,32 @@ class QueryRequest(BaseModel):
 
 class QueryResponse(BaseModel):
     response: str
+    cached: bool = False
+
+# In-memory cache for responses
+response_cache: Dict[str, str] = {}
+
+
+
+def generate_cache_key(messages: List[MessageContent]) -> str:
+    """
+    Generate a unique cache key for the request messages.
+    
+    Args:
+        messages (List[MessageContent]): List of message contents
+        
+    Returns:
+        str: Cache key
+    """
+    # Convert messages to a consistent string representation
+    message_str = json.dumps([{
+        'role': msg.role,
+        'content': msg.content,
+        'file_url': [str(url) for url in (msg.file_url or [])]
+    } for msg in messages], sort_keys=True)
+    
+    # Generate hash
+    return hashlib.sha256(message_str.encode()).hexdigest()
 
 async def download_file(url: str) -> bytes:
     """
@@ -105,6 +133,17 @@ async def query_judge_agent(request: QueryRequest):
         QueryResponse: AI's response to the content
     """
     try:
+        # Generate cache key for the request
+        cache_key = generate_cache_key(request.messages)
+
+        # Check if response is in cache
+        if cache_key in response_cache:
+            return QueryResponse(
+                response=response_cache[cache_key],
+                cached=True
+            )
+
+
         # Format messages for multimodal input
         formatted_messages = []
         
@@ -154,6 +193,9 @@ async def query_judge_agent(request: QueryRequest):
                     if hasattr(msg, 'content'):
                         full_response += msg.content
 
+        # Cache the response
+        response_cache[cache_key] = full_response
+
         # Update chat history with the last message and response
         last_msg = request.messages[-1] if request.messages else None
         if last_msg:
@@ -163,7 +205,24 @@ async def query_judge_agent(request: QueryRequest):
                 ("ai", full_response)
             ])
 
-        return QueryResponse(response=full_response)
+        return QueryResponse(response=full_response, cached=False)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+    
+
+
+# Optional: Add cache management endpoints
+@app.post("/clear-cache")
+async def clear_cache():
+    """Clear the in-memory response cache"""
+    response_cache.clear()
+    return {"message": "Cache cleared successfully"}
+
+@app.get("/cache-status")
+async def get_cache_status():
+    """Get current cache status"""
+    return {
+        "cache_size": len(response_cache),
+        "cached_keys": list(response_cache.keys())
+    }

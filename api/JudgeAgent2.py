@@ -1,4 +1,6 @@
 # langchain single agent but without agentExecutor because its limited. we rely on the langraph ReAct agent
+# C:\Users\cherub\ai-backend-fastapi\api\JudgeAgent2.py
+
 
 import os
 from dotenv import load_dotenv
@@ -15,12 +17,18 @@ from langchain_core.prompts import PromptTemplate, ChatPromptTemplate, MessagesP
 from api.rag import rag_tool
 from langchain_community.tools import TavilySearchResults
 from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.caches import InMemoryCache
+from langchain_core.globals import set_llm_cache
 
 # Load environment variables from a .env files
 load_dotenv()
 
 # Tavily API key
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+
+# Setup in-memory cache
+set_llm_cache(InMemoryCache())
+
 
 # Create search tool
 search_tool = TavilySearchResults(
@@ -41,6 +49,7 @@ Your responses must be professional, structured, and exhaustive. You are authori
 1. **Search Tool Usage:**
    - Always use the search tool to consolidate your knowledge base with the latest and most relevant information. This includes verifying Nigerian laws, referencing case precedents, and analyzing international agreements.
    - Include insights gained from the search tool in your responses, citing relevant details to strengthen your conclusions, as well as given credit or refrences to sources you used.
+   - if the search tool isnt working or not giving any results, then use your knowledge base if not explicitly stated to use the search tool, else, if explicitly stated to use the search tool, then use the search tool, but if its not working or generating any response, tell the user to come bakc later as you are experiencing difficulties in generating a response with the search tool.
 
 2. **RAG Tool Usage:**
    - Use the RAG tool to retrieve context and detailed information from the Weaviate vector database when answering questions about legal cases, terms, concepts, and Nigerian or comparative law.
@@ -48,6 +57,16 @@ Your responses must be professional, structured, and exhaustive. You are authori
    - Provide comprehensive responses that combine insights from the RAG tool and the search tool for the most thorough analysis.
    - When information is used from either the RAG tool or the search tool, always include proper references and citations to authors, sources, Title of case, date of judgement, who was the judgement delivered by if there is any, and organizations which in this case is LegalPedia. All this refrences information are there in the query JSON.
    - if at any query, the rag tool delivers no information, then use the search tool to answer the query, and tell the user that the legalpedia context database did not deliver any information and you relied on the web search.
+
+   When using the RAG tool:
+   - If you receive a "database_unavailable" error and the user explicitly requested Legalpedia data, inform them that the database is currently inaccessible
+   - If you receive a "use_web_search" error, seamlessly switch to using the search tool without mentioning the database error, but you can mention that the legalpedia context database is currently unavailable and hence using the search tool
+   - Always maintain a professional and helpful tone regardless of which tool you're using
+
+   When switching between tools:
+   - Make the transition seamless from the user's perspective
+   - Don't mention technical details about why you're switching tools
+   - Focus on providing the most relevant and accurate information available
 
 3. **Note and File Management:**
    - Use the note tool to create, save, or append legal documents, case analyses, and research notes to PDF files.
@@ -78,7 +97,11 @@ Your goal is to provide accurate, well-researched, and professional legal insigh
 tools = [note_tool, rag_tool, search_tool]
 
 # Initialize LLM
-model = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+model = ChatOpenAI(
+    model="gpt-4o-mini", 
+    temperature=0,
+    cache=True
+    )
 
 # Create LangGraph agent with memory
 memory = MemorySaver()
