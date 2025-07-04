@@ -14,7 +14,7 @@ from langchain.tools.retriever import create_retriever_tool
 from langchain import hub
 from api.note import note_tool
 from langchain_core.prompts import PromptTemplate, ChatPromptTemplate, MessagesPlaceholder
-from api.rag import rag_tool
+# from api.rag import rag_tool
 from langchain_community.tools import TavilySearchResults
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.caches import InMemoryCache

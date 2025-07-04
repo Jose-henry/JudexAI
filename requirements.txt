@@ -1,3 +1,35 @@
+# langgraph
+# langsmith
+# langchain_anthropic
+# python-dotenv
+# langchain
+# langchain-community>=0.2.11
+# tavily-python
+# requests
+# langchain-openai
+# langchainhub
+# aiohttp
+# PyPDF2
+# reportlab
+# fastapi
+# pydantic
+# uvicorn
+# gunicorn
+# python-multipart
+# pypdf
+# langchain-unstructured
+# unstructured-client
+# unstructured
+# unstructured[pdf]
+# python-magic
+# PyMuPDF
+# pillow 
+# python-docx 
+# docx2pdf
+# pandas
+# antiword
+
+
 langgraph==0.2.62
 langsmith==0.2.10
 langchain_anthropic==0.3.1
@@ -5,7 +37,6 @@ python-dotenv==1.0.1
 langchain==0.3.14
 langchain-community==0.3.14
 tavily-python==0.5.0
-langchain-weaviate==0.0.3
 requests==2.32.3
 langchain-openai==0.3.0
 langchainhub==0.1.21
@@ -17,7 +48,6 @@ pydantic==2.9.2
 uvicorn==0.34.0
 gunicorn==23.0.0
 python-multipart==0.0.20
-weaviate-client==4.10.4
 pypdf==5.1.0
 python-magic==0.4.27
 PyMuPDF==1.25.1
