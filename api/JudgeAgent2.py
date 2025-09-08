@@ -4,20 +4,23 @@ from dotenv import load_dotenv
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import create_react_agent
 from langchain_core.messages import SystemMessage
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_openai import ChatOpenAI
 from langchain_community.tools import TavilySearchResults
 from langchain_community.utilities import GoogleSerperAPIWrapper
 from langchain_core.tools import Tool
 from langchain_core.caches import InMemoryCache
 from langchain_core.globals import set_llm_cache
-from langchain_core.vectorstores import InMemoryVectorStore
 from langchain.schema import Document
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from typing import AsyncGenerator, Dict, Any, List
 
-# Import the modified PDF RAG tool
-from api.llama_pdf_rag_tool import pdf_rag_tool, get_processed_documents, get_document_cache
+# Import PDF RAG tool and shared PDF knowledge helpers
+from api.llama_pdf_rag_tool import (
+    search_pdf_knowledge,
+    has_pdf_knowledge,
+    retrieve_pdf_knowledge,
+)
 
 # Load environment variables from a .env files
 load_dotenv()
@@ -28,115 +31,40 @@ set_llm_cache(InMemoryCache())
 # Thread pool for concurrent operations
 thread_pool = ThreadPoolExecutor(max_workers=4)
 
-# Vector store and embeddings for JudgeAgent
-judge_embeddings = OpenAIEmbeddings(
-    openai_api_key=os.getenv("OPENAI_API_KEY"),
-    model="text-embedding-3-small"
-)
-
-judge_vectorstore = InMemoryVectorStore(embedding=judge_embeddings)
-
-# Document cache for JudgeAgent
-judge_document_cache: Dict[str, Dict] = {}
-
-# Migrate existing processed documents from tool
-def migrate_processed_documents():
-    """Migrate processed documents from tool to JudgeAgent vector store."""
-    try:
-        # Get documents from tool
-        documents = get_processed_documents()
-        if documents:
-            judge_vectorstore.add_documents(documents)
-            # Migrate cache info
-            tool_cache = get_document_cache()
-            judge_document_cache.update(tool_cache)
-            print(f"Migrated {len(documents)} documents to JudgeAgent vector store")
-    except Exception as e:
-        print(f"Migration failed: {str(e)}")
-
-# Search function for JudgeAgent
-def judge_search_documents(query: str, k: int = 5) -> str:
-    """Search through processed documents in JudgeAgent's vector store."""
-    try:
-        if len(judge_vectorstore.store) == 0:
-            return "No documents have been processed yet. Please provide a PDF URL first."
-            
-        results = judge_vectorstore.similarity_search_with_score(query, k=k)
-        
-        if not results:
-            return "No relevant content found in the processed documents."
-        
-        response = f"Found {len(results)} relevant sections in the processed documents:\n\n"
-        
-        for i, (doc, score) in enumerate(results, 1):
-            content = doc.page_content[:500].strip()
-            source = doc.metadata.get('source', 'Unknown source')
-            chunk_info = f"Chunk {doc.metadata.get('chunk_index', '?')} of {doc.metadata.get('total_chunks', '?')}"
-            
-            response += f"{i}. **{chunk_info}** (Relevance: {1-score:.2f})\n"
-            response += f"Source: {source}\n"
-            response += f"Content: {content}...\n\n"
-        
-        return response
-        
-    except Exception as e:
-        return f"Search failed: {str(e)}"
-
-# Enhanced PDF processing that stores in JudgeAgent's vector store
-def enhanced_pdf_processing(url: str) -> str:
-    """Process PDF and store in JudgeAgent's vector store."""
-    try:
-        # Use the tool to process PDF
-        result = pdf_rag_tool.func(url)
-        
-        # Check if processing was successful
-        if "Successfully processed" in result or "already processed" in result:
-            # Migrate the newly processed documents
-            migrate_processed_documents()
-            return result
-        else:
-            return result
-            
-    except Exception as e:
-        return f"PDF processing failed: {str(e)}"
+# PDF processing is handled outside this module now (see main.py)
 
 # System message for the agent - Updated to include PDF processing capabilities
 system_message = """You are Lextech AI Judicial Assistant called JudexAI, a highly knowledgeable, impartial, and comparative virtual judge assistant created by Lextech Ecosystems Limited, a Nigerian company specializing in legal technology services.
 
-Your primary function is to analyze legal cases and provide impartial legal insights grounded in Nigerian law and jurisprudence while incorporating comparative insights from other jurisdictions and analyzing the impact of relevant bilateral and multilateral agreements involving Nigeria, such as the African Continental Free Trade Agreement (AfCFTA), do not respond to queries outside the scope of your responsibilities.
+Your primary function is to analyze legal cases and provide impartial legal insights grounded in Nigerian law and jurisprudence while incorporating comparative insights from other jurisdictions and analyzing the impact of relevant bilateral and multilateral agreements involving Nigeria, such as the African Continental Free Trade Agreement (AfCFTA). Do not respond to queries outside the scope of your responsibilities.
 
-**ENHANCED PDF PROCESSING CAPABILITIES**
+**DOCUMENT AND IMAGE HANDLING (PREPROCESSED FLOW)**
 
-You have an advanced PDF processing system:
+- Documents (PDF, DOCX, XLSX/CSV, PPTX, TXT/MD/HTML, etc.) are preprocessed upstream via LlamaParse and indexed into your internal knowledge base before you answer.
+- Images are preprocessed upstream and included alongside the user's message as image blocks.
+- You should answer using the already indexed document knowledge (RAG) and any provided images. Do not attempt to reprocess documents yourself.
 
-- When a user provides a PDF URL, use the `llama_pdf_document_processor` tool to process it. The document is then stored in your internal knowledge base for future reference.
-- For subsequent questions about processed PDFs, use your internal search functions to answer, without reprocessing or calling external tools.
-- Processed documents remain available for future queries, enabling efficient and fast responses.
+**TOOL USAGE RULES**
 
-**TOOL USAGE RULES:**
+1. Internal RAG Search:
+   - When the user asks about content from uploaded documents, rely on internal retrieval (the knowledge base is already populated) and answer directly.
+   - Cite relevant sections when useful.
 
-1. **PDF Processing:**
-   - Use the `llama_pdf_document_processor` tool only when a new PDF URL is provided.
+2. Web/Search Tools:
+   - Use search tools only if the user explicitly requests updated or external information (e.g., "latest", "recent", "current status", "search", "find", etc.).
+   - Do not run web search by default after using internal RAG.
 
-2. **Search Tools:**
-   - Use search tools only if the user explicitly requests updated or external information (e.g., "latest info", "recent updates", "current status", "search for", "find information about").
-   - Never use search tools automatically after processing a PDF.
-   - If unsure, ask the user for clarification.
+3. Response Guidelines:
+   - For document-related questions, prefer the internal knowledge base first.
+   - For non-document questions that require currency, use search tools conservatively.
+   - Structure responses clearly; include brief citations or references when appropriate.
 
-3. **Response Guidelines:**
-   - For questions about PDF content, rely solely on the processed document.
-   - Use search tools only when explicitly requested.
-   - Structure responses clearly and provide citations where appropriate.
+**Examples**
+- User: "Summarize the uploaded agreement and highlight liabilities" → Use internal RAG → Provide summary with references.
+- User: "Find the latest Supreme Court ruling on X" → Use search tool → Provide updated info with links.
 
-**Example:**
-- User: "Tell me about this PDF [url]" → Process PDF → Answer using PDF content.
-- User: "Get the latest information about this case" → Use search tool → Provide updated information.
-
-If asked to perform tasks outside this scope, politely decline and refer the user to Lextech Ecosystems Limited.
-
-**Objective:**  
-Provide accurate, well-researched, and professional legal insights, leveraging all available tools, especially your PDF processing and internal search capabilities.
-
+**Objective:**
+Provide accurate, well-researched, and professional legal insights, leveraging the preprocessed document knowledge base and images, and using web search only when explicitly needed.
 """
 
 # Alternative search tool
@@ -163,8 +91,8 @@ tavily_search_tool = Tool(
     description="Useful for searching current legal information and recent case law when needed",
 )
 
-# Prepare tools - Now includes PDF RAG tool
-tools = [google_search_tool, pdf_rag_tool, tavily_search_tool]
+# Prepare tools - PDF processing tool removed (handled upstream)
+tools = [google_search_tool, tavily_search_tool]
 
 # Initialize LLM with streaming enabled
 model = ChatOpenAI(
@@ -185,7 +113,7 @@ langgraph_agent_executor = create_react_agent(
     tools, 
     checkpointer=memory, 
     state_modifier=system_message,
-    debug=True
+    debug=False
 )
 
 # Custom agent executor with enhanced PDF handling
@@ -200,13 +128,13 @@ async def custom_agent_executor(messages, config):
             # Check if this is likely a search query (not a URL and not a general question)
             is_search_query = (
                 not query.startswith(('http://', 'https://', 'www.')) and
-                len(judge_vectorstore.store) > 0 and
+                has_pdf_knowledge() and
                 any(keyword in query for keyword in ['find', 'search', 'look up', 'what about', 'where is', 'show me', 'in the document', 'from the pdf'])
             )
             
             if is_search_query:
-                # Use internal search instead of tool call
-                search_result = judge_search_documents(query)
+                # Use shared PDF knowledge search instead of tool call
+                search_result = search_pdf_knowledge(query)
                 return {"messages": [("ai", search_result)]}
     
     # For PDF processing or other queries, use the standard agent
@@ -234,11 +162,6 @@ async def stream_agent_response_async(messages_dict, config) -> AsyncGenerator[s
     
     # Tool name mappings for user-friendly messages (using actual tool names)
     TOOL_MESSAGES = {
-        'llama_pdf_document_processor': {
-            'start': '📄 Let me process the document...',
-            'loading': '⏳ Processing PDF content...',
-            'icon': '📄'
-        },
         'google_search': {
             'start': '🔍 Let me search for the latest information using Google...',
             'loading': '⏳ Searching the web...',
@@ -255,22 +178,68 @@ async def stream_agent_response_async(messages_dict, config) -> AsyncGenerator[s
         # Check if this is an internal search query
         messages = messages_dict.get("messages", [])
         
-        if messages and len(judge_vectorstore.store) > 0:
+        if messages and has_pdf_knowledge():
             last_message = messages[-1]
-            if hasattr(last_message, 'content'):
-                query = last_message.content.lower()
-                is_search_query = (
-                    not query.startswith(('http://', 'https://', 'www.')) and
-                    any(keyword in query for keyword in ['find', 'search', 'look up', 'what about', 'where is', 'show me', 'in the document', 'from the pdf'])
-                )
-                
-                if is_search_query:
-                    # Perform internal search and yield results directly
-                    search_result = judge_search_documents(query)
-                    yield search_result
+            # Extract query from either tuple format ("human", [blocks]) or message object
+            extracted_query = ""
+            try:
+                if isinstance(last_message, tuple) and len(last_message) > 1:
+                    content = last_message[1]
+                    if isinstance(content, list) and content:
+                        first_block = content[0]
+                        if isinstance(first_block, dict) and 'text' in first_block:
+                            extracted_query = str(first_block['text'])
+                        else:
+                            extracted_query = str(content)
+                    else:
+                        extracted_query = str(content)
+                elif hasattr(last_message, 'content'):
+                    lc_content = last_message.content
+                    if isinstance(lc_content, list) and lc_content:
+                        blk = lc_content[0]
+                        if isinstance(blk, dict) and 'text' in blk:
+                            extracted_query = str(blk['text'])
+                        else:
+                            extracted_query = str(lc_content)
+                    else:
+                        extracted_query = str(lc_content)
+            except Exception:
+                extracted_query = ""
+
+            if extracted_query:
+                query = extracted_query.lower()
+                # Detect explicit external info intent; otherwise prefer internal RAG
+                external_intent = any(keyword in query for keyword in [
+                    'latest', 'recent', 'current status', 'up to date', 'today',
+                    'search', 'find', 'look up', 'google', 'web', 'news'
+                ])
+
+                if not external_intent:
+                    # Prefer internal RAG answer by default when we have knowledge
+                    docs = retrieve_pdf_knowledge(query, k=5)
+                    if not docs:
+                        yield "No relevant content found in the processed documents."
+                        return
+                    try:
+                        context_text = "\n\n".join([d.page_content[:1200] for d in docs])
+                        synthesis_prompt = (
+                            f"Using the following context from processed legal documents, answer the user query comprehensively and concisely. "
+                            f"Cite sections when useful.\n\nQuery: {extracted_query}\n\nContext:\n{context_text}\n\nAnswer:"
+                        )
+                        for chunk in model.stream(synthesis_prompt):
+                            if hasattr(chunk, 'content') and chunk.content:
+                                yield chunk.content
+                    except Exception:
+                        try:
+                            answer = model.invoke(synthesis_prompt)
+                            if hasattr(answer, 'content') and answer.content:
+                                yield answer.content
+                        except Exception:
+                            pass
                     return
         
         # For other cases, use standard tool streaming
+        pdf_answered = False
         async for event in langgraph_agent_executor.astream_events(messages_dict, config, version="v1"):
             
             # Handle tool call start events
@@ -290,12 +259,18 @@ async def stream_agent_response_async(messages_dict, config) -> AsyncGenerator[s
             
             # Handle regular chat model streaming
             elif event["event"] == "on_chat_model_stream":
+                if pdf_answered:
+                    # Suppress generic agent text after we've already answered from PDF
+                    continue
                 chunk = event["data"]["chunk"]
                 if hasattr(chunk, 'content') and chunk.content:
                     yield chunk.content
             
             # Handle agent completion
             elif event["event"] == "on_chain_end" and "agent" in event.get("name", ""):
+                if pdf_answered:
+                    # Suppress final agent message when we've already answered from PDF
+                    continue
                 if "output" in event["data"]:
                     output = event["data"]["output"]
                     if hasattr(output, 'messages'):
@@ -335,8 +310,7 @@ async def stream_agent_response_async(messages_dict, config) -> AsyncGenerator[s
         except Exception as fallback_error:
             yield f"ERROR: {str(fallback_error)}"
 
-# Migrate existing documents on startup
-migrate_processed_documents()
+# No migration needed; storage handled by tool module
 
 def main():
     # Chat history to maintain conversation context

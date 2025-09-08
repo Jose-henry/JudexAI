@@ -1,7 +1,8 @@
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
-from typing import List, Optional, Dict
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse, HTMLResponse
+from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, HttpUrl
+from dotenv import load_dotenv
 import base64
 import io
 import os
@@ -10,10 +11,23 @@ import requests
 import hashlib
 import json
 from api.JudgeAgent2 import langgraph_agent_executor, stream_agent_response_async
+from api.llama_pdf_rag_tool import store_processed_pdf
+from llama_cloud_services import LlamaParse
+import tempfile
+import requests
+import hashlib
 import asyncio
+import uuid
+import logging
+
+load_dotenv()
 
 # Initialize FastAPI app
 app = FastAPI()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s %(name)s: %(message)s')
+logger = logging.getLogger("preprocess")
 
 # Enhanced request body schema to handle URLs
 class MessageContent(BaseModel):
@@ -24,6 +38,8 @@ class MessageContent(BaseModel):
 class QueryRequest(BaseModel):
     messages: List[MessageContent]
     stream: Optional[bool] = False  # Add streaming option
+    upload_ids: Optional[List[str]] = None  # Preprocessed uploads to include
+    session_id: Optional[str] = None  # Session that groups preprocessed uploads
 
 class QueryResponse(BaseModel):
     response: str
@@ -32,7 +48,11 @@ class QueryResponse(BaseModel):
 # In-memory cache for responses
 response_cache: Dict[str, str] = {}
 
-def generate_cache_key(messages: List[MessageContent]) -> str:
+# In-memory store for preprocessed uploads (grouped by session_id and upload_id)
+# Structure: { session_id: { upload_id: { 'type': 'image'|'document', 'url': str, 'data': Any, 'metadata': Dict[str, Any] } } }
+preprocessed_store: Dict[str, Dict[str, Dict[str, Any]]] = {}
+
+def generate_cache_key(messages: List[MessageContent], upload_ids: Optional[List[str]] = None) -> str:
     """
     Generate a unique cache key for the request messages.
     
@@ -48,6 +68,8 @@ def generate_cache_key(messages: List[MessageContent]) -> str:
         'content': msg.content,
         'file_url': [str(url) for url in (msg.file_url or [])]
     } for msg in messages], sort_keys=True)
+    if upload_ids:
+        message_str += json.dumps(sorted(upload_ids))
     
     # Generate hash
     return hashlib.sha256(message_str.encode()).hexdigest()
@@ -62,11 +84,15 @@ async def download_file(url: str) -> bytes:
     Returns:
         bytes: Content of the downloaded file
     """
+    logger.info(f"Downloading file: {url}")
     try:
-        response = requests.get(url, timeout=10)
+        response = await asyncio.to_thread(requests.get, url,  timeout=10)
         response.raise_for_status()
-        return response.content
+        content = response.content
+        logger.info(f"Downloaded {len(content)} bytes from: {url}")
+        return content
     except requests.RequestException as e:
+        logger.error(f"Download failed for {url}: {e}")
         raise HTTPException(status_code=400, detail=f"Failed to download file: {str(e)}")
 
 async def process_image_url(url: str) -> str:
@@ -79,35 +105,200 @@ async def process_image_url(url: str) -> str:
     Returns:
         str: Base64-encoded image string
     """
+    logger.info(f"Image processing started: {url}")
     image_bytes = await download_file(url)
     try:
         img = Image.open(io.BytesIO(image_bytes))
         buffer = io.BytesIO()
         img.save(buffer, format="PNG")
-        return base64.b64encode(buffer.getvalue()).decode("utf-8")
+        b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+        logger.info(f"Image processing succeeded: {url} (base64 length={len(b64)})")
+        return b64
     except Exception as e:
+        logger.error(f"Image processing failed for {url}: {e}")
         raise HTTPException(status_code=400, detail=f"Failed to process image: {str(e)}")
 
-def format_messages_for_agent(messages: List[MessageContent]) -> List[tuple]:
+async def process_document_url(url: str) -> List[Any]:
     """
-    Format messages for the LangGraph agent with proper structure.
-    
-    Args:
-        messages: List of message contents
-        
-    Returns:
-        List[tuple]: Formatted messages for agent
+    Process a document (pdf/docx/xlsx/pptx/txt/md/html etc.) via LlamaParse and return
+    a list of LangChain Document chunks with metadata.
     """
-    formatted_messages = []
-    
-    for msg in messages:
-        # Convert the message content to the expected format
-        if msg.role.lower() == 'user' or msg.role.lower() == 'human':
-            formatted_messages.append(("human", msg.content))
+    llama_api_key = os.getenv("LLAMA_CLOUD_API_KEY")
+    if not llama_api_key:
+        raise HTTPException(status_code=500, detail="LLAMA_CLOUD_API_KEY not set")
+    parser = LlamaParse(
+        api_key=llama_api_key,
+        num_workers=4,
+        verbose=True,
+        language="en",
+        result_type="markdown"
+    )
+    logger.info(f"Document processing started: {url}")
+    try:
+        file_bytes = await download_file(url)
+    except HTTPException:
+        raise
+
+    with tempfile.NamedTemporaryFile(suffix=os.path.splitext(str(url).split('?')[0])[1] or '.bin', delete=False) as temp_file:
+        temp_file.write(file_bytes)
+        temp_path = temp_file.name
+
+    try:
+        logger.info(f"LlamaParse parsing started: {url}")
+        result = await asyncio.to_thread(parser.parse, temp_path)
+        logger.info(f"LlamaParse parsing completed: {url}")
+        if hasattr(result, 'get_markdown_documents'):
+            markdown_docs = result.get_markdown_documents(split_by_page=True)
         else:
-            formatted_messages.append(("ai", msg.content))
-    
-    return formatted_messages
+            markdown_docs = result
+
+        from langchain.text_splitter import RecursiveCharacterTextSplitter
+        from langchain.schema import Document
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1500,
+            chunk_overlap=300,
+            separators=["\n\n## ", "\n\n### ", "\n\n", "\n", ". ", " ", ""]
+        )
+        full_text = ""
+        for i, doc in enumerate(markdown_docs):
+            if hasattr(doc, 'text'):
+                page_text = doc.text
+                page_metadata = getattr(doc, 'metadata', {})
+            else:
+                page_text = str(doc)
+                page_metadata = {'page': i}
+            full_text += f"\n\n--- Page {page_metadata.get('page', i)} ---\n\n"
+            full_text += page_text
+
+        chunks = text_splitter.split_text(full_text)
+        doc_id = hashlib.md5(url.encode()).hexdigest()
+        documents = []
+        for i, chunk in enumerate(chunks):
+            documents.append(Document(
+                page_content=chunk,
+                metadata={
+                    "source": url,
+                    "doc_id": doc_id,
+                    "chunk_id": f"{doc_id}_{i}",
+                    "chunk_index": i,
+                    "document_type": "document",
+                    "total_chunks": len(chunks)
+                }
+            ))
+        logger.info(f"Document chunking completed: {url} (chunks={len(documents)})")
+        return documents
+    finally:
+        try:
+            os.unlink(temp_path)
+        except Exception:
+            pass
+
+## Removed legacy process_pdf_url; unified into process_document_url
+
+# -------------------------
+# Preupload URL processing
+# -------------------------
+
+class PreprocessFileItem(BaseModel):
+    url: HttpUrl
+    kind: Optional[str] = "auto"  # 'auto' | 'image' | 'document'
+
+class PreprocessRequest(BaseModel):
+    files: List[PreprocessFileItem]
+    session_id: Optional[str] = None
+
+class PreprocessItemResult(BaseModel):
+    upload_id: str
+    url: HttpUrl
+    type: str
+    status: str
+    preview: Optional[str] = None
+
+class PreprocessResponse(BaseModel):
+    session_id: str
+    items: List[PreprocessItemResult]
+
+def _detect_type(url: str, kind: Optional[str]) -> str:
+    if kind and kind in ["image", "document"]:
+        return kind
+    ext = str(url).split('?')[0].split('.')[-1].lower()
+    if ext in ["png", "jpg", "jpeg", "gif", "webp", "bmp"]:
+        return "image"
+    return "document"
+
+def _get_or_create_session(session_id: Optional[str]) -> str:
+    sid = session_id or str(uuid.uuid4())
+    if sid not in preprocessed_store:
+        preprocessed_store[sid] = {}
+    return sid
+
+@app.post("/files/preprocess-urls", response_model=PreprocessResponse)
+async def preprocess_urls(req: PreprocessRequest):
+    """Accepts file URLs, processes images/documents concurrently, and stores results under session/upload IDs."""
+    session_id = _get_or_create_session(req.session_id)
+    results: List[PreprocessItemResult] = []
+
+    # Limit concurrency to 5 (matches UI limit)
+    semaphore = asyncio.Semaphore(5)
+
+    async def handle_one(index: int, f: PreprocessFileItem) -> PreprocessItemResult:
+        async with semaphore:
+            file_type = _detect_type(str(f.url), f.kind)
+            upload_id = str(uuid.uuid4())
+            try:
+                if file_type == "image":
+                    logger.info(f"[session={session_id}] [upload_id={upload_id}] Image preprocessing queued: {f.url}")
+                    image_base64 = await process_image_url(str(f.url))
+                    preprocessed_store[session_id][upload_id] = {
+                        'type': 'image',
+                        'url': str(f.url),
+                        'data': image_base64,
+                        'metadata': {
+                            'file_index': index
+                        }
+                    }
+                    logger.info(f"[session={session_id}] [upload_id={upload_id}] Image preprocessing success: {f.url}")
+                    return PreprocessItemResult(
+                        upload_id=upload_id,
+                        url=f.url,
+                        type='image',
+                        status='processed',
+                        preview='image/png;base64,' + image_base64[:64] + '...'
+                    )
+                else:
+                    logger.info(f"[session={session_id}] [upload_id={upload_id}] Document preprocessing queued: {f.url}")
+                    documents = await process_document_url(str(f.url))
+                    preprocessed_store[session_id][upload_id] = {
+                        'type': 'document',
+                        'url': str(f.url),
+                        'data': documents,
+                        'metadata': {
+                            'file_index': index,
+                            'total_chunks': len(documents)
+                        }
+                    }
+                    logger.info(f"[session={session_id}] [upload_id={upload_id}] Document preprocessing success: {f.url} (chunks={len(documents)})")
+                    preview_text = documents[0].page_content[:200] + ('...' if len(documents[0].page_content) > 200 else '') if documents else ''
+                    return PreprocessItemResult(
+                        upload_id=upload_id,
+                        url=f.url,
+                        type='document',
+                        status='processed',
+                        preview=preview_text
+                    )
+            except Exception as e:
+                logger.error(f"[session={session_id}] [upload_id={upload_id}] Preprocessing failed: {f.url} error={e}")
+                return PreprocessItemResult(
+                    upload_id=upload_id,
+                    url=f.url,
+                    type=file_type,
+                    status=f"failed: {str(e)}",
+                    preview=None
+                )
+
+    tasks = [handle_one(i, f) for i, f in enumerate(req.files)]
+    results = await asyncio.gather(*tasks)
+    return PreprocessResponse(session_id=session_id, items=list(results))
 
 # Chat history to maintain conversation context (moved to global scope for persistence)
 global_chat_history = []
@@ -127,7 +318,7 @@ async def query_judge_agent(request: QueryRequest):
     
     try:
         # Generate cache key for the request
-        cache_key = generate_cache_key(request.messages)
+        cache_key = generate_cache_key(request.messages, request.upload_ids)
 
         # Check if response is in cache
         if cache_key in response_cache:
@@ -138,6 +329,42 @@ async def query_judge_agent(request: QueryRequest):
 
         # Process messages and files
         formatted_messages = []
+        # Collect hints for processed document sources
+        processed_doc_hints: List[str] = []
+        # If upload_ids provided, index documents and collect images
+        if request.upload_ids and request.session_id:
+            session_bucket = preprocessed_store.get(request.session_id, {})
+            for up_id in request.upload_ids:
+                item = session_bucket.get(up_id)
+                if not item:
+                    logger.warning(f"[session={request.session_id}] Missing upload_id={up_id} in store")
+                    continue
+                if item.get('type') == 'document':
+                    # Index now into RAG
+                    try:
+                        docs = item.get('data') or []
+                        if docs:
+                            meta = item.setdefault('metadata', {})
+                            if not meta.get('indexed'):
+                                logger.info(f"[session={request.session_id}] Indexing document upload_id={up_id} url={item.get('url','')} chunks={len(docs)}")
+                                summary = store_processed_pdf(item.get('url', ''), docs)
+                                meta['indexed'] = True
+                                logger.info(f"[session={request.session_id}] Indexed document upload_id={up_id}")
+                            processed_doc_hints.append(item.get('url', ''))
+                    except Exception:
+                        logger.exception(f"[session={request.session_id}] Indexing failed for upload_id={up_id}")
+                        pass
+                elif item.get('type') == 'image':
+                    # Attach image block to messages later
+                    img_b64 = item.get('data')
+                    meta = item.setdefault('metadata', {})
+                    if img_b64 and not meta.get('attached'):
+                        logger.info(f"[session={request.session_id}] Attaching image upload_id={up_id}")
+                        formatted_messages.append({
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{img_b64}"}
+                        })
+                        meta['attached'] = True
         
         for msg in request.messages:
             # Start with the original message content
@@ -149,27 +376,13 @@ async def query_judge_agent(request: QueryRequest):
                 "text": enhanced_content
             })
             
-            # Process file URLs if present
-            if msg.file_url:
-                for url in msg.file_url:
-                    file_ext = str(url).split('.')[-1].lower()
-                    
-                    if file_ext == 'pdf':
-                        # Include PDF URL in the text content for the AI to process with RAG tool
-                        enhanced_content += f"\n\nPDF Document URL: {str(url)}"
-                        # Update the text message with the PDF URL
-                        formatted_messages[-1]["text"] = enhanced_content
-                    elif file_ext in ['png', 'jpg', 'jpeg']:
-                        # Process single image
-                        image_base64 = await process_image_url(str(url))
-                        formatted_messages.append({
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{image_base64}"
-                            }
-                        })
-                    else:
-                        raise HTTPException(status_code=400, detail="Unsupported file format")
+            # Add hints for any preprocessed documents
+            if processed_doc_hints:
+                hint = "\n\n(Use processed document context from: " + ", ".join(processed_doc_hints) + ")"
+                enhanced_content += hint
+                formatted_messages[-1]["text"] = enhanced_content
+
+            # Legacy msg.file_url support removed; rely on preupload upload_ids
 
         # Format final message structure for LangChain (like original working code)
         chat_messages = [("human", formatted_messages)]
@@ -219,8 +432,40 @@ async def query_judge_agent_stream(request: QueryRequest):
     async def generate_stream():
         global global_chat_history
         try:
-            # Process messages and files (same as before)
+            # Process messages and files (including preprocessed uploads)
             formatted_messages = []
+            processed_doc_hints: List[str] = []
+            if request.upload_ids and request.session_id:
+                session_bucket = preprocessed_store.get(request.session_id, {})
+                for up_id in request.upload_ids:
+                    item = session_bucket.get(up_id)
+                    if not item:
+                        logger.warning(f"[session={request.session_id}] Missing upload_id={up_id} in store")
+                        continue
+                    if item.get('type') == 'document':
+                        try:
+                            docs = item.get('data') or []
+                            if docs:
+                                meta = item.setdefault('metadata', {})
+                                if not meta.get('indexed'):
+                                    logger.info(f"[session={request.session_id}] Indexing document upload_id={up_id} url={item.get('url','')} chunks={len(docs)}")
+                                    summary = store_processed_pdf(item.get('url', ''), docs)
+                                    meta['indexed'] = True
+                                processed_doc_hints.append(item.get('url', ''))
+                                logger.info(f"[session={request.session_id}] Indexed document upload_id={up_id}")
+                        except Exception:
+                            logger.exception(f"[session={request.session_id}] Indexing failed for upload_id={up_id}")
+                            pass
+                    elif item.get('type') == 'image':
+                        img_b64 = item.get('data')
+                        meta = item.setdefault('metadata', {})
+                        if img_b64 and not meta.get('attached'):
+                            logger.info(f"[session={request.session_id}] Attaching image upload_id={up_id}")
+                            formatted_messages.append({
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/png;base64,{img_b64}"}
+                            })
+                            meta['attached'] = True
             
             for msg in request.messages:
                 enhanced_content = msg.content
@@ -230,23 +475,12 @@ async def query_judge_agent_stream(request: QueryRequest):
                     "text": enhanced_content
                 })
                 
-                if msg.file_url:
-                    for url in msg.file_url:
-                        file_ext = str(url).split('.')[-1].lower()
-                        
-                        if file_ext == 'pdf':
-                            enhanced_content += f"\n\nPDF Document URL: {str(url)}"
-                            formatted_messages[-1]["text"] = enhanced_content
-                        elif file_ext in ['png', 'jpg', 'jpeg']:
-                            image_base64 = await process_image_url(str(url))
-                            formatted_messages.append({
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/png;base64,{image_base64}"
-                                }
-                            })
-                        else:
-                            raise HTTPException(status_code=400, detail="Unsupported file format")
+                # Add hints for any preprocessed documents
+                if processed_doc_hints:
+                    hint = "\n\n(Use processed document context from: " + ", ".join(processed_doc_hints) + ")"
+                    formatted_messages[-1]["text"] = enhanced_content + hint
+
+                # Legacy msg.file_url support removed; rely on preupload upload_ids
 
             chat_messages = [("human", formatted_messages)]
             recent_history = global_chat_history[-10:] if len(global_chat_history) > 10 else global_chat_history
@@ -309,7 +543,9 @@ async def clear_cache():
     global global_chat_history
     response_cache.clear()
     global_chat_history.clear()
-    return {"message": "Cache and chat history cleared successfully"}
+    # Also clear preprocessed store
+    preprocessed_store.clear()
+    return {"message": "Cache, preprocessed store, and chat history cleared successfully"}
 
 @app.get("/cache-status")
 async def get_cache_status():
@@ -437,7 +673,19 @@ async def get_test_page():
         
         <div class="input-group">
             <label for="message"><strong>Legal Question:</strong></label>
-            <textarea id="message" rows="4" placeholder="Try: 'Tell me about this PDF [URL]' or 'Search for recent Nigerian constitutional law cases'">tell me about this pdf https://www.judiciary.uk/wp-content/uploads/2018/08/akhter-v-khan-31.7.18.pdf</textarea>
+            <textarea id="message" rows="4" placeholder="Type your question...">Summarize key issues in the uploaded documents.</textarea>
+        </div>
+
+        <div class="input-group">
+            <label><strong>Upload (URLs) — up to 5:</strong></label>
+            <div id="url-list"></div>
+            <div style="display:flex; gap:8px; margin-top:8px;">
+                <input type="text" id="url-input" placeholder="https://..." style="flex:1;" />
+                <button onclick="addUrl()">➕ Add URL</button>
+                <button onclick="startPreprocess()">⬆️ Preprocess</button>
+            </div>
+            <small>URLs are sent to the server for preprocessing; you'll see per-URL status below.</small>
+            <div id="preprocess-status" style="margin-top:10px;"></div>
         </div>
         
         <div class="input-group">
@@ -456,6 +704,65 @@ async def get_test_page():
 
     <script>
         let isStreaming = false;
+        let sessionId = null;
+        let uploadItems = []; // { upload_id, url, type, status }
+        function addUrl() {
+            const input = document.getElementById('url-input');
+            const url = input.value.trim();
+            if (!url) return;
+            const list = document.getElementById('url-list');
+            const current = Array.from(list.querySelectorAll('[data-url]')).map(n => n.getAttribute('data-url'));
+            if (current.length >= 5) { alert('Maximum 5 URLs'); return; }
+            if (current.includes(url)) { alert('Already added'); return; }
+            const row = document.createElement('div');
+            row.setAttribute('data-url', url);
+            row.setAttribute('data-key', encodeURI(url));
+            row.style.display = 'flex';
+            row.style.alignItems = 'center';
+            row.style.gap = '8px';
+            row.style.marginTop = '6px';
+            row.innerHTML = `<code style="flex:1; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(url)}</code><button onclick="this.parentElement.remove()">✖</button>`;
+            list.appendChild(row);
+            input.value = '';
+        }
+
+        async function startPreprocess() {
+            const list = document.getElementById('url-list');
+            const urls = Array.from(list.querySelectorAll('[data-url]')).map(n => n.getAttribute('data-url'));
+            const statusDiv = document.getElementById('preprocess-status');
+            if (urls.length === 0) {
+                alert('Add 1-5 URLs first');
+                return;
+            }
+            statusDiv.innerHTML = '';
+            urls.forEach(u => {
+                const item = document.createElement('div');
+                item.setAttribute('data-status-key', encodeURI(u));
+                item.className = 'tool-notification tool-working';
+                item.innerHTML = `<span class="loading-spinner"></span>Preprocessing: ${escapeHtml(u)}`;
+                statusDiv.appendChild(item);
+            });
+            try {
+                const res = await fetch('/files/preprocess-urls', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: sessionId, files: urls.map(u => ({ url: u })) })
+                });
+                if (!res.ok) throw new Error('Preprocess failed');
+                const data = await res.json();
+                sessionId = data.session_id;
+                uploadItems = data.items || [];
+                // Update statuses
+                uploadItems.forEach(it => {
+                    const node = statusDiv.querySelector(`[data-status-key="${CSS.escape(encodeURI(it.url))}"]`);
+                    if (!node) return;
+                    node.className = it.status.startsWith('failed') ? 'tool-notification error' : 'tool-notification tool-complete';
+                    node.innerHTML = (it.status.startsWith('failed') ? '❌ ' : '✅ ') + `${escapeHtml(it.type)}: ${escapeHtml(it.url)} — ${escapeHtml(it.status)}`;
+                });
+            } catch (e) {
+                alert('Preprocessing error: ' + e.message);
+            }
+        }
         
         async function sendMessage(useStreaming = false) {
             const message = document.getElementById('message').value;
@@ -501,7 +808,9 @@ async def get_test_page():
                         messages: [{
                             role: 'user',
                             content: message
-                        }]
+                        }],
+                        session_id: sessionId,
+                        upload_ids: uploadItems.filter(i => i.status === 'processed').map(i => i.upload_id)
                     })
                 });
                 
@@ -542,7 +851,9 @@ async def get_test_page():
                         messages: [{
                             role: 'user',
                             content: message
-                        }]
+                        }],
+                        session_id: sessionId,
+                        upload_ids: uploadItems.filter(i => i.status === 'processed').map(i => i.upload_id)
                     })
                 });
                 
