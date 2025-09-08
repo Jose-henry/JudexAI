@@ -376,11 +376,23 @@ async def query_judge_agent(request: QueryRequest):
                 "text": enhanced_content
             })
             
-            # Add hints for any preprocessed documents
+            # Add hints for any preprocessed documents only if the query seems document-related
             if processed_doc_hints:
-                hint = "\n\n(Use processed document context from: " + ", ".join(processed_doc_hints) + ")"
-                enhanced_content += hint
-                formatted_messages[-1]["text"] = enhanced_content
+                # Check if the user's query seems to be about documents
+                query_lower = msg.content.lower()
+                document_keywords = [
+                    'document', 'pdf', 'contract', 'agreement', 'clause', 'section', 
+                    'article', 'paragraph', 'provision', 'uploaded', 'file', 'text',
+                    'content', 'summarize', 'explain', 'what does', 'what is in',
+                    'from the', 'in the document', 'according to'
+                ]
+                
+                is_document_query = any(keyword in query_lower for keyword in document_keywords)
+                
+                if is_document_query:
+                    hint = "\n\n(Use processed document context from: " + ", ".join(processed_doc_hints) + ")"
+                    enhanced_content += hint
+                    formatted_messages[-1]["text"] = enhanced_content
 
             # Legacy msg.file_url support removed; rely on preupload upload_ids
 
@@ -475,10 +487,22 @@ async def query_judge_agent_stream(request: QueryRequest):
                     "text": enhanced_content
                 })
                 
-                # Add hints for any preprocessed documents
+                # Add hints for any preprocessed documents only if the query seems document-related
                 if processed_doc_hints:
-                    hint = "\n\n(Use processed document context from: " + ", ".join(processed_doc_hints) + ")"
-                    formatted_messages[-1]["text"] = enhanced_content + hint
+                    # Check if the user's query seems to be about documents
+                    query_lower = msg.content.lower()
+                    document_keywords = [
+                        'document', 'pdf', 'contract', 'agreement', 'clause', 'section', 
+                        'article', 'paragraph', 'provision', 'uploaded', 'file', 'text',
+                        'content', 'summarize', 'explain', 'what does', 'what is in',
+                        'from the', 'in the document', 'according to'
+                    ]
+                    
+                    is_document_query = any(keyword in query_lower for keyword in document_keywords)
+                    
+                    if is_document_query:
+                        hint = "\n\n(Use processed document context from: " + ", ".join(processed_doc_hints) + ")"
+                        formatted_messages[-1]["text"] = enhanced_content + hint
 
                 # Legacy msg.file_url support removed; rely on preupload upload_ids
 

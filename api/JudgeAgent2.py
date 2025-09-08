@@ -113,7 +113,7 @@ langgraph_agent_executor = create_react_agent(
     tools, 
     checkpointer=memory, 
     state_modifier=system_message,
-    debug=False
+    debug=True
 )
 
 # Custom agent executor with enhanced PDF handling
@@ -175,7 +175,7 @@ async def stream_agent_response_async(messages_dict, config) -> AsyncGenerator[s
     }
     
     try:
-        # Check if this is an internal search query
+        # Check if this is a document-related query that should use RAG
         messages = messages_dict.get("messages", [])
         
         if messages and has_pdf_knowledge():
@@ -208,35 +208,49 @@ async def stream_agent_response_async(messages_dict, config) -> AsyncGenerator[s
 
             if extracted_query:
                 query = extracted_query.lower()
-                # Detect explicit external info intent; otherwise prefer internal RAG
+                
+                # Detect explicit external info intent (web search)
                 external_intent = any(keyword in query for keyword in [
                     'latest', 'recent', 'current status', 'up to date', 'today',
                     'search', 'find', 'look up', 'google', 'web', 'news'
                 ])
+                
+                # Only use RAG if there's explicit document-related intent
+                document_intent = (
+                    '(use processed document context' in extracted_query.lower() or
+                    any(k in query for k in [
+                        'in the document', 'from the document', 'from the pdf',
+                        'uploaded document', 'uploaded file', 'pdf', 'document',
+                        'clause', 'section', 'article', 'paragraph', 'provision'
+                    ])
+                )
 
-                if not external_intent:
-                    # Prefer internal RAG answer by default when we have knowledge
+                if document_intent and not external_intent:
+                    # Always check PDF store first for document-related queries
                     docs = retrieve_pdf_knowledge(query, k=5)
-                    if not docs:
-                        yield "No relevant content found in the processed documents."
-                        return
-                    try:
-                        context_text = "\n\n".join([d.page_content[:1200] for d in docs])
-                        synthesis_prompt = (
-                            f"Using the following context from processed legal documents, answer the user query comprehensively and concisely. "
-                            f"Cite sections when useful.\n\nQuery: {extracted_query}\n\nContext:\n{context_text}\n\nAnswer:"
-                        )
-                        for chunk in model.stream(synthesis_prompt):
-                            if hasattr(chunk, 'content') and chunk.content:
-                                yield chunk.content
-                    except Exception:
+                    if docs:
+                        # Found relevant content in PDFs - use it
                         try:
-                            answer = model.invoke(synthesis_prompt)
-                            if hasattr(answer, 'content') and answer.content:
-                                yield answer.content
+                            context_text = "\n\n".join([d.page_content[:1200] for d in docs])
+                            synthesis_prompt = (
+                                f"Using the following context from processed legal documents, answer the user query comprehensively and concisely. "
+                                f"Cite sections when useful.\n\nQuery: {extracted_query}\n\nContext:\n{context_text}\n\nAnswer:"
+                            )
+                            for chunk in model.stream(synthesis_prompt):
+                                if hasattr(chunk, 'content') and chunk.content:
+                                    yield chunk.content
                         except Exception:
-                            pass
-                    return
+                            try:
+                                answer = model.invoke(synthesis_prompt)
+                                if hasattr(answer, 'content') and answer.content:
+                                    yield answer.content
+                            except Exception:
+                                pass
+                        return
+                    else:
+                        # No relevant content found in PDFs - fall back to normal agent
+                        # This allows the AI to use its general knowledge or other tools
+                        pass
         
         # For other cases, use standard tool streaming
         pdf_answered = False
@@ -324,7 +338,7 @@ def main():
                 break
 
             # Prepare messages with recent chat history
-            recent_history = chat_history[-10:] if len(chat_history) > 10 else chat_history
+            recent_history = chat_history[-60:] if len(chat_history) > 60 else chat_history
             messages = recent_history + [("human", question)]
 
             config = {"configurable": {"thread_id": "main-conversation"}}
