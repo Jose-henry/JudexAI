@@ -33,11 +33,9 @@ logger = logging.getLogger("preprocess")
 class MessageContent(BaseModel):
     role: str
     content: str
-    file_url: Optional[List[HttpUrl]] = None
 
 class QueryRequest(BaseModel):
     messages: List[MessageContent]
-    stream: Optional[bool] = False  # Add streaming option
     upload_ids: Optional[List[str]] = None  # Preprocessed uploads to include
     session_id: Optional[str] = None  # Session that groups preprocessed uploads
 
@@ -66,7 +64,6 @@ def generate_cache_key(messages: List[MessageContent], upload_ids: Optional[List
     message_str = json.dumps([{
         'role': msg.role,
         'content': msg.content,
-        'file_url': [str(url) for url in (msg.file_url or [])]
     } for msg in messages], sort_keys=True)
     if upload_ids:
         message_str += json.dumps(sorted(upload_ids))
@@ -419,9 +416,7 @@ async def query_judge_agent(request: QueryRequest):
         # Update global chat history
         last_msg = request.messages[-1] if request.messages else None
         if last_msg:
-            file_urls = list(last_msg.file_url) if last_msg.file_url else []
-            content_desc = f"{last_msg.content} (with files: {', '.join(map(str, file_urls))})" if file_urls else last_msg.content
-            
+            content_desc = last_msg.content
             global_chat_history.extend([
                 ("human", content_desc),
                 ("ai", full_response)
@@ -533,9 +528,7 @@ async def query_judge_agent_stream(request: QueryRequest):
             # Update chat history
             last_msg = request.messages[-1] if request.messages else None
             if last_msg:
-                file_urls = list(last_msg.file_url) if last_msg.file_url else []
-                content_desc = f"{last_msg.content} (with files: {', '.join(map(str, file_urls))})" if file_urls else last_msg.content
-                
+                content_desc = last_msg.content
                 global_chat_history.extend([
                     ("human", content_desc),
                     ("ai", full_response)
