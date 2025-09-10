@@ -260,7 +260,7 @@ async def preprocess_urls(req: PreprocessRequest):
                         url=f.url,
                         type='image',
                         status='processed',
-                        preview='image/png;base64,' + image_base64[:64] + '...'
+                        preview='image/png;base64,' + image_base64[:80] + '...'
                     )
                 else:
                     logger.info(f"[session={session_id}] [upload_id={upload_id}] Document preprocessing queued: {f.url}")
